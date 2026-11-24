@@ -1,4 +1,4 @@
-import { $lyricsContainerExists, $simpleLyricsMode } from "../../../../utils/stores.ts";
+import { $lyricsContainerExists, isBloomRenderer } from "../../../../utils/stores.ts";
 import { PageContainer } from "../../../../components/Pages/PageView.ts";
 import { applyStyles, removeAllStyles } from "../../../CSS/Styles.ts";
 import {
@@ -22,12 +22,14 @@ import {
 import { CreateLyricsContainer, DestroyAllLyricsContainers } from "../CreateLyricsContainer.ts";
 import { StripZeroWidth } from "../Utils/StripZeroWidth.ts";
 import { PickDisplayText } from "../Utils/PickDisplayText.ts";
+import { AppendLineRomanization, RomanizeUnderLine } from "../Utils/RomanizedRow.ts";
 import { initLyricsVirtualizer } from "../../LyricsVirtualizer.ts";
-import { ApplyIsByCommunity } from "../Credits/ApplyIsByCommunity.tsx";
-import { ApplyLyricsCredits } from "../Credits/ApplyLyricsCredits.ts";
+import { ApplySongCredits, MarkLastLineSide } from "../Credits/ApplyLyricsCredits.ts";
 import { EmitApply, EmitNotApplyed } from "../OnApply.ts";
-import { ApplyLyricsProvider } from "../Credits/ApplyProvider.ts";
 import { RemoveEmptyLyricsLines } from "../../EmptyLines.ts";
+import Logger from "../../../Logger.ts";
+
+const lineLogger = new Logger("Line Lyrics");
 
 // Define the data structure for lyrics
 interface LyricsLineData {
@@ -43,13 +45,16 @@ interface LyricsData {
   Content: LyricsLineData[];
   StartTime: number;
   SongWriters?: string[];
-  source?: "spt" | "spl" | "aml";
+  source?: "spt" | "spl" | "aml" | "uns";
   classes?: string;
   styles?: Record<string, string>;
 }
 
 export function ApplyLineLyrics(data: LyricsData, UseRomanized: boolean = false): void {
   if (!$lyricsContainerExists.get()) return;
+  // Under each line, the line keeps its own text and the romanization gets a row below it.
+  const UnderLine = RomanizeUnderLine();
+  const ShowRomanized = UseRomanized && !UnderLine;
   EmitNotApplyed();
 
   DestroyAllLyricsContainers();
@@ -62,7 +67,7 @@ export function ApplyLineLyrics(data: LyricsData, UseRomanized: boolean = false)
 
   // Check if LyricsContainer exists
   if (!LyricsContainer) {
-    console.error("LyricsContainer not found");
+    lineLogger.error("LyricsContainer not found");
     return;
   }
 
@@ -72,6 +77,8 @@ export function ApplyLineLyrics(data: LyricsData, UseRomanized: boolean = false)
   LyricsContainer.classList.toggle("HasDuetLines", hasOppositeAligned);
   const hasRtlLines = content.some(line => isRtl(line.Text));
   LyricsContainer.classList.toggle("HasRtlLines", hasRtlLines);
+  const lastLine = content[content.length - 1];
+  MarkLastLineSide(LyricsContainer, !!lastLine?.OppositeAligned, !!lastLine && isRtl(lastLine.Text));
 
   LyricsContainer.setAttribute("data-lyrics-type", "Line");
 
@@ -182,9 +189,10 @@ export function ApplyLineLyrics(data: LyricsData, UseRomanized: boolean = false)
   content.forEach((line, index, arr) => {
     const lineElem = document.createElement("div");
     lineElem.textContent = StripZeroWidth(
-      PickDisplayText(line, UseRomanized)
+      PickDisplayText(line, ShowRomanized)
     );
     lineElem.classList.add("line");
+    if (UnderLine) AppendLineRomanization(lineElem, line);
 
     if (isRtl(line.Text) && !lineElem.classList.contains("rtl")) {
       lineElem.classList.add("rtl");
@@ -195,7 +203,7 @@ export function ApplyLineLyrics(data: LyricsData, UseRomanized: boolean = false)
     const lineEndTimeAndNextLineStartTimeDistance =
       nextLineStartTime !== 0 ? nextLineStartTime - line.EndTime : 0;
 
-    const lineEndTime = $simpleLyricsMode.get()
+    const lineEndTime = isBloomRenderer()
       ? nextLineStartTime === 0
         ? line.EndTime
         : lineEndTimeAndNextLineStartTimeDistance < getLyricsBetweenShow() &&
@@ -209,6 +217,7 @@ export function ApplyLineLyrics(data: LyricsData, UseRomanized: boolean = false)
       StartTime: ConvertTime(line.StartTime),
       EndTime: ConvertTime(lineEndTime),
       TotalTime: ConvertTime(lineEndTime) - ConvertTime(line.StartTime),
+      LeadEndTime: ConvertTime(line.EndTime),
     });
 
     if (line.OppositeAligned) {
@@ -301,9 +310,7 @@ export function ApplyLineLyrics(data: LyricsData, UseRomanized: boolean = false)
     }
   });
 
-  ApplyLyricsCredits(data, LyricsContainer);
-  ApplyLyricsProvider(data, LyricsContainer);
-  ApplyIsByCommunity(data, LyricsContainer);
+  ApplySongCredits(data, LyricsContainer);
 
   if (LyricsContainerParent) {
     LyricsContainerInstance.Append(LyricsContainerParent);

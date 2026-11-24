@@ -8,21 +8,28 @@ import "./css/ContentBox.css";
 import "./css/DynamicBG/spicy-dynamic-bg.css";
 import "./css/Lyrics/main.css";
 import "./css/Lyrics/Mixed.css";
+import "./css/Lyrics/ScrollToActive.css";
+import "./css/Lyrics/PinnedCredits.css";
 import "./css/Loaders/LoaderContainer.css";
 import "./css/Loaders/LyricsSkeleton.css";
 import "./css/font-pack/font-pack.css";
 
 import ApplyDynamicBackground, {
-  GetStaticBackground,
+  getBackgroundStyle,
   KawarpMap,
+  PAGE_BACKGROUND_KEY,
+  PrefetchArtistImage,
 } from "./components/DynamicBG/dynamicBackground.ts";
+import { isExperimentEnabled } from "./utils/experiments.ts";
+import "./components/DynamicBG/CanvasImmersive.ts";
+import "./components/DynamicBG/AnimatedArtwork.ts";
+import "./components/DynamicBG/NpvCanvasBackground.ts";
 import {
   $currentLyricsData,
   $showNpvDynamicBg,
   $removeSpotifyLyricsButton,
   $popupLyricsAllowed,
   $spicyLyricsVersion,
-  $staticBackgroundMode,
   $developerMode,
 } from "./utils/stores.ts";
 import Global from "./components/Global/Global.ts";
@@ -33,6 +40,7 @@ import PageView, { GetPageRoot, PageContainer } from "./components/Pages/PageVie
 import LoadFonts, { ApplyFontPixel } from "./components/Styling/Fonts.ts";
 import { Icons } from "./components/Styling/Icons.ts";
 import Fullscreen, { EnterSpicyLyricsFullscreen, ExitFullscreenElement } from "./components/Utils/Fullscreen.ts";
+import "./components/Utils/NextUp.ts";
 import { UpdateNowBar } from "./components/Utils/NowBar.ts";
 import { IsPlaying } from "./utils/Addons.ts";
 import { requestPositionSync } from "./utils/Gets/GetProgress.ts";
@@ -52,9 +60,13 @@ import "./css/polyfills/generic-modal-polyfill.css";
 import "./css/NoticeDialog.css";
 import "./css/polyfills/sonner-polyfill.css";
 import "./css/NPVLyrics.css";
+import "./css/PopupDock.css";
+import "./css/PortraitFullscreen.css";
+import "./css/PlayerBelowCover.css";
+import "./css/GroupedViewControls.css";
 import { showUpdatedDialog } from "./components/ReactComponents/UpdateDialog.tsx";
 import { IsPIP, OpenPopupLyrics, ClosePopupLyrics } from "./components/Utils/PopupLyrics.ts";
-import { GetNPVCardElement, GetNPVElementForBackground, GetNPVObserverRoot, initNPVLyrics } from "./components/Utils/NPVLyrics.ts";
+import { GetNPVCardElement, GetNPVElement, GetNPVObserverRoot, initNPVLyrics } from "./components/Utils/NPVLyrics.ts";
 import ReactDOM from "react-dom/client";
 import { runThemeMatcher } from "./utils/themeMatcher.ts";
 import { guardSpicetifyScrollingFix } from "./utils/scrollFixGuard.ts";
@@ -67,11 +79,17 @@ import Whentil from "./modules/Whentil.ts";
 import App from "./utils/app.ts";
 import { initSession } from "./utils/SessionManager/index.ts";
 import { jitter } from "./utils/jitter.ts";
+import { StartExperimentOverridesSync } from "./utils/experiments.ts";
+import { getRemoteConfig, StartRemoteConfigSync } from "./utils/remoteConfig.ts";
 
 async function main() {
   const appLogger = new Logger("App");
   const dynamicBgLogger = new Logger("Dynamic Background");
   const playbackLogger = new Logger("Playback");
+
+  // First thing: it needs nothing from Spotify, and the sooner it lands the
+  // fewer boot-time requests run on last session's values.
+  StartRemoteConfigSync();
 
   if (App.isDev() || $developerMode.get()) {
     appLogger.debug("Boot sequence");
@@ -115,6 +133,7 @@ async function main() {
   window._spicy_lyrics_metadata = {};
 
   void initSession();
+  StartExperimentOverridesSync();
 
   LoadFonts();
   ApplyFontPixel();
@@ -127,114 +146,6 @@ async function main() {
             to {
                 background-position-x: 0;
             }
-        }
-
-        @keyframes Marquee_SongName {
-          0% {
-            transform: translateX(calc(0px + min(-100% + 86cqw, 0px) * 0));
-          }
-          10% {
-            transform: translateX(calc(0px + min(-100% + 86cqw, 0px) * 0));
-          }
-          90% {
-            transform: translateX(calc(0px + min(-100% + 86cqw, 0px) * 1));
-          }
-          100% {
-            transform: translateX(calc(0px + min(-100% + 86cqw, 0px) * 1));
-          }
-        }
-
-        @keyframes Marquee_SongName_SongMoreInfo {
-          0% {
-            transform: translateX(calc(0px + min(-100% + 98cqw, 0px) * 0));
-          }
-          10% {
-            transform: translateX(calc(0px + min(-100% + 98cqw, 0px) * 0));
-          }
-          90% {
-            transform: translateX(calc(0px + min(-100% + 98cqw, 0px) * 1));
-          }
-          100% {
-            transform: translateX(calc(0px + min(-100% + 98cqw, 0px) * 1));
-          }
-        }
-
-        @keyframes Marquee_Artists {
-          0% {
-            transform: translateX(calc(0px + min(-100% + 81cqw, 0px) * 0));
-          }
-          10% {
-            transform: translateX(calc(0px + min(-100% + 81cqw, 0px) * 0));
-          }
-          90% {
-            transform: translateX(calc(0px + min(-100% + 81cqw, 0px) * 1));
-          }
-          100% {
-            transform: translateX(calc(0px + min(-100% + 81cqw, 0px) * 1));
-          }
-        }
-
-        @keyframes Marquee_Artists_SongMoreInfo {
-          0% {
-            transform: translateX(calc(0px + min(-100% + 98cqw, 0px) * 0));
-          }
-          10% {
-            transform: translateX(calc(0px + min(-100% + 98cqw, 0px) * 0));
-          }
-          90% {
-            transform: translateX(calc(0px + min(-100% + 98cqw, 0px) * 1));
-          }
-          100% {
-            transform: translateX(calc(0px + min(-100% + 98cqw, 0px) * 1));
-          }
-        }
-
-        @keyframes Marquee_SongName_Compact {
-          0% {
-            transform: translateX(calc(0px + min(-100% + 100cqw, 0px) * 0));
-          }
-          10% {
-            transform: translateX(calc(0px + min(-100% + 100cqw, 0px) * 0));
-          }
-          90% {
-            transform: translateX(calc(0px + min(-100% + 100cqw, 0px) * 1));
-          }
-          100% {
-            transform: translateX(calc(0px + min(-100% + 100cqw, 0px) * 1));
-          }
-        }
-
-        @keyframes Marquee_Artists_Compact {
-          0% {
-            transform: translateX(calc(0px + min(-100% + 100cqw, 0px) * 0));
-          }
-          10% {
-            transform: translateX(calc(0px + min(-100% + 100cqw, 0px) * 0));
-          }
-          90% {
-            transform: translateX(calc(0px + min(-100% + 100cqw, 0px) * 1));
-          }
-          100% {
-            transform: translateX(calc(0px + min(-100% + 100cqw, 0px) * 1));
-          }
-        }
-
-        @keyframes SLM_Animation {
-          0% {
-            --SLM_GradientPosition: -27.5%;
-          }
-          100% {
-            --SLM_GradientPosition: 100%;
-          }
-        }
-
-        @keyframes Pre_SLM_GradientAnimation {
-          0% {
-            --SLM_GradientPosition: -50%;
-          }
-          100% {
-            --SLM_GradientPosition: -27.5%;
-          }
         }
 
         @keyframes SL_SkeletonSweep {
@@ -493,9 +404,24 @@ async function main() {
     );
 
     // A fresh install has no previous version, and there is nothing to announce.
+    // Only a real step up is announced, and each version once: when two installs of
+    // different versions take turns loading, the version flips on every launch, and
+    // this used to greet the user with "Updated" each time. The announced version has
+    // a key of its own because an older copy rewrites the whole UI-state blob from
+    // the snapshot it loaded, which would drop it.
+    const LAST_ANNOUNCED_KEY = "SL:lastAnnouncedVersion";
     const fromVersion = $fromVersion.get();
     const toVersion = $spicyLyricsVersion.get();
-    if (fromVersion && toVersion && fromVersion !== toVersion) {
+    if (
+      fromVersion &&
+      toVersion &&
+      toVersion !== Spicetify.LocalStorage.get(LAST_ANNOUNCED_KEY) &&
+      Session.SpicyLyrics.IsBehind(
+        Session.SpicyLyrics.ParseVersion(fromVersion),
+        Session.SpicyLyrics.ParseVersion(toVersion)
+      )
+    ) {
+      Spicetify.LocalStorage.set(LAST_ANNOUNCED_KEY, toVersion);
       showUpdatedDialog(fromVersion, toVersion);
     }
 
@@ -520,7 +446,7 @@ async function main() {
     let nowPlayingBarObservedRoot: Element | null = null;
     let nowPlayingBarMutationTimeout: ReturnType<typeof setTimeout> | null = null;
 
-    const getNowPlayingBarElement = GetNPVElementForBackground;
+    const getNowPlayingBarElement = GetNPVElement;
 
     const scheduleNowPlayingBarDynamicBackgroundApply = () => {
       if (nowPlayingBarMutationTimeout) {
@@ -529,8 +455,57 @@ async function main() {
       nowPlayingBarMutationTimeout = setTimeout(() => {
         nowPlayingBarMutationTimeout = null;
         startNowPlayingBarObserver();
+        syncNPVFlags();
         void applyDynamicBackgroundToNowPlayingBar(SpotifyPlayer.GetCover("large"));
       }, 50);
+    };
+
+    // The refreshed NPV only exposes its scroll position to a scroll-driven
+    // animation; default.css eases its header in over time instead, as the legacy
+    // layout does, so it needs a scrolled flag, and a Canvas flag because the
+    // legacy header differs without one. Attributes, not classes: the observer
+    // below reapplies the background on class changes.
+    const markNPVScrolled = (event: Event) => {
+      const viewport = event.target;
+      if (!(viewport instanceof HTMLElement) || !viewport.hasAttribute("data-overlayscrollbars-viewport")) return;
+      // Only the panel's own scroller, not one nested inside it.
+      const root = viewport.closest("[data-overlayscrollbars]")?.parentElement;
+      if (root?.hasAttribute("data-npv-root")) root.toggleAttribute("data-sl-npv-scrolled", viewport.scrollTop > 0);
+    };
+
+    // On every observed panel change, so a Canvas that mounts late or goes with a
+    // song change is picked up, as is a panel already scrolled when this loads.
+    // It also marks the track's title row (title, artists and its buttons) and the
+    // "Next in queue" block, which default.css lays out as the legacy layout does.
+    // Neither has a stable hook of its own: the title row is the first block in the
+    // info column holding both links, and the queue follows the sections list
+    // after it (it's left out when the queue is empty).
+    const syncNPVFlags = () => {
+      const root = nowPlayingBarObservedRoot?.querySelector("[data-npv-root]");
+      if (!root) return;
+      const viewport = root.querySelector(":scope > [data-overlayscrollbars] [data-overlayscrollbars-viewport]");
+      root.toggleAttribute("data-sl-npv-scrolled", (viewport?.scrollTop ?? 0) > 0);
+      root.toggleAttribute("data-sl-npv-canvas", Boolean(root.querySelector("[data-canvas-surface]")));
+      const trackInfo = viewport?.querySelector(
+        ':scope > :first-child > :nth-child(2) > :has(a[href^="/album/"]):has(a[href^="/artist/"])'
+      );
+      // Without a native lyrics preview the lyrics card sits right under the title,
+      // so it doesn't count as one of the blocks.
+      const nextBlock = (block: Element | null | undefined) => {
+        let next = block?.nextElementSibling;
+        while (next?.id === "SpicyLyricsNPVCard") next = next.nextElementSibling;
+        return next ?? null;
+      };
+      const queue = nextBlock(nextBlock(trackInfo));
+      for (const [attribute, target] of [
+        ["data-sl-npv-track-info", trackInfo],
+        ["data-sl-npv-queue", queue],
+      ] as const) {
+        for (const marked of root.querySelectorAll(`[${attribute}]`)) {
+          if (marked !== target) marked.removeAttribute(attribute);
+        }
+        target?.setAttribute(attribute, "");
+      }
     };
 
     const startNowPlayingBarObserver = () => {
@@ -538,7 +513,10 @@ async function main() {
       if (!sidebar) return;
       if (nowPlayingBarObserver && sidebar === nowPlayingBarObservedRoot) return;
       nowPlayingBarObserver?.disconnect();
+      nowPlayingBarObservedRoot?.removeEventListener("scroll", markNPVScrolled, true);
       nowPlayingBarObservedRoot = sidebar;
+      // Scroll doesn't bubble; capturing on the sidebar survives Spotify swapping the panel.
+      sidebar.addEventListener("scroll", markNPVScrolled, { capture: true, passive: true });
 
       nowPlayingBarObserver = new MutationObserver((mutations) => {
         // Resolved once per callback, not once per record.
@@ -564,6 +542,9 @@ async function main() {
         });
 
         if (!shouldReapply) return;
+        // Before the debounce below: the flags move the layout, so they land before
+        // the panel's change is painted rather than a frame or more after it.
+        syncNPVFlags();
         scheduleNowPlayingBarDynamicBackgroundApply();
       });
 
@@ -601,7 +582,11 @@ async function main() {
         KawarpMap.delete("npvbg");
       }
       nowPlayingBar?.querySelector<HTMLElement>(".spicy-dynamic-bg")?.remove();
-      nowPlayingBar?.classList.remove("spicy-dynamic-bg-in-this");
+      // Guarded: even a no-op classList write queues a `class` record, which the
+      // NPV observer turns into another apply — and another cleanup — every 50 ms.
+      if (nowPlayingBar?.classList.contains("spicy-dynamic-bg-in-this")) {
+        nowPlayingBar.classList.remove("spicy-dynamic-bg-in-this");
+      }
       syncNPVDynamicBackgroundClass();
       lastNowPlayingBarElement = null;
       lastImgUrl = null;
@@ -621,7 +606,9 @@ async function main() {
       // `.Root__top-container` is expected to be the parent of `.Root__right-sidebar`.
       const parent = rightSidebar?.parentElement;
       if (parent?.classList.contains("Root__top-container")) return parent;
-      return document.querySelector<HTMLElement>(".Root__top-container");
+      // 1.3.5 no longer maps it (.LiEjwLua6RNBCvlysAT2 there); it is #main-view's parent on every build.
+      return document.querySelector<HTMLElement>(".Root__top-container, .LiEjwLua6RNBCvlysAT2") ??
+        document.getElementById("main-view")?.parentElement ?? null;
     };
 
     const checkCinemaViewAndMaybeCleanup = (topContainer: HTMLElement) => {
@@ -701,9 +688,19 @@ async function main() {
           return;
         }
         lastNowPlayingBarElement = nowPlayingBar;
-        if (coverUrl === lastImgUrl) return;
+        // Spotify re-renders the aside when the NPV layout changes, dropping the
+        // class and the canvas; the cover is the same, but it needs painting again.
+        if (
+          coverUrl === lastImgUrl &&
+          nowPlayingBar.classList.contains("spicy-dynamic-bg-in-this") &&
+          nowPlayingBar.querySelector(":scope > .spicy-dynamic-bg")
+        ) return;
 
-        nowPlayingBar.classList.add("spicy-dynamic-bg-in-this");
+        // Guarded for the same reason as in CleanupNowBarDynamicBgLets: when no layer
+        // can be painted, an unconditional add would re-trigger this apply forever.
+        if (!nowPlayingBar.classList.contains("spicy-dynamic-bg-in-this")) {
+          nowPlayingBar.classList.add("spicy-dynamic-bg-in-this");
+        }
         syncNPVDynamicBackgroundClass();
 
         await ApplyDynamicBackground(nowPlayingBar, "npvbg");
@@ -737,7 +734,12 @@ async function main() {
       scheduleNowPlayingBarDynamicBackgroundApply()
     });
 
+    let songChangeSeen = false;
+    // The cover the last background apply was asked for (see the cover poll below).
+    let lastBackgroundCover = "";
     async function onSongChange(event: any) {
+      songChangeSeen = true;
+      lastBackgroundCover = SpotifyPlayer.GetCover("large") ?? "";
       playbackLogger.debug("Song change pipeline");
       const contentType = SpotifyPlayer.GetContentType();
       playbackLogger.debug("Detected content type", contentType);
@@ -763,21 +765,7 @@ async function main() {
         fetchLyrics(songUri).then(ApplyLyrics);
       }
 
-      const _staticBgMode = $staticBackgroundMode.get();
-      if (
-        _staticBgMode !== "off" &&
-        !SpotifyPlayer.IsDJ() &&
-        (_staticBgMode === "auto" || _staticBgMode === "artistHeader")
-      ) {
-        const Artists = SpotifyPlayer.GetArtists();
-        const Artist =
-          Artists?.map((artist) => artist.uri?.replace("spotify:artist:", ""))[0] ?? undefined;
-        try {
-          void GetStaticBackground(Artist, SpotifyPlayer.GetId());
-        } catch {
-          dynamicBgLogger.error("Unable to prefetch static background");
-        }
-      }
+      void PrefetchArtistImage();
 
       try {
         void scheduleNowPlayingBarDynamicBackgroundApply();
@@ -786,30 +774,51 @@ async function main() {
       }
 
       const contentBox = PageContainer?.querySelector<HTMLElement>(".ContentBox");
-      if (!contentBox || $staticBackgroundMode.get() === "color") return;
+      if (!contentBox) return;
+      // The original Cover Colors look repaints a second after the change (dynamicBackground.ts).
+      if (getBackgroundStyle() === "color" && !isExperimentEnabled("refinedBackground")) return;
       try {
-        void ApplyDynamicBackground(contentBox, "lpagebg");
+        void ApplyDynamicBackground(contentBox, PAGE_BACKGROUND_KEY);
       } catch (err) {
         dynamicBgLogger.error("Failed applying dynamic background to page", err);
       }
     }
     Global.Event.listen("playback:songchange", onSongChange);
 
-    const _initStaticBgMode = $staticBackgroundMode.get();
-    if (
-      _initStaticBgMode !== "off" &&
-      !SpotifyPlayer.IsDJ() &&
-      (_initStaticBgMode === "auto" || _initStaticBgMode === "artistHeader")
-    ) {
-      const Artists = SpotifyPlayer.GetArtists();
-      const Artist =
-        Artists?.map((artist) => artist.uri?.replace("spotify:artist:", ""))[0] ?? undefined;
-      try {
-        await GetStaticBackground(Artist, SpotifyPlayer.GetId());
-      } catch {
-        dynamicBgLogger.error("Unable to prefetch static background");
-      }
+    // At a song change the player can still report a cover that isn't the new track's,
+    // and nothing fires when the right one arrives, so the background stayed on the
+    // wrong art. Repaint whenever the reported cover differs from the one last applied;
+    // an apply for the cover already shown returns at once.
+    {
+      lastBackgroundCover = SpotifyPlayer.GetCover("large") ?? "";
+      new IntervalManager(0.5, () => {
+        const cover = SpotifyPlayer.GetCover("large") ?? "";
+        if (cover === lastBackgroundCover) return;
+        lastBackgroundCover = cover;
+        void scheduleNowPlayingBarDynamicBackgroundApply();
+        const contentBox = PageContainer?.querySelector<HTMLElement>(".ContentBox");
+        if (!contentBox) return;
+        if (getBackgroundStyle() === "color" && !isExperimentEnabled("refinedBackground")) return;
+        void ApplyDynamicBackground(contentBox, PAGE_BACKGROUND_KEY);
+      }).Start();
     }
+
+    // Spotify can restore the track before the songchange relay is attached and never send one for
+    // it, which leaves a page opened at boot on the placeholder cover with no lyrics.
+    if (!Spicetify.Player.data?.item?.uri) {
+      Whentil.When(
+        () => songChangeSeen || Spicetify.Player.data?.item?.uri,
+        () => {
+          if (songChangeSeen) return;
+          playbackLogger.debug("Song change pipeline (boot catch-up)");
+          Global.Event.evoke("playback:songchange", { data: Spicetify.Player.data });
+        },
+        1,
+        30_000
+      );
+    }
+
+    await PrefetchArtistImage();
 
     window.addEventListener("online", () => {
       $lastFetchedUri.set(null);
@@ -987,7 +996,7 @@ async function main() {
               }
             );
           } catch (err) {
-            console.error("Spicy Lyrics: couldn't listen for volume changes", err);
+            playbackLogger.error("Couldn't listen for volume changes", err);
           }
         }
       );
@@ -1059,7 +1068,7 @@ async function main() {
           if (appliedUri !== refetchUri) {
             fetchLyrics(refetchUri).then(ApplyLyrics);
           }
-        }, 1000);
+        }, getRemoteConfig().lyricsFetch.safetyNetRefetchDelayMs);
       });
     }
 
@@ -1097,19 +1106,24 @@ async function main() {
         }
       });
 
-      // 2 minutes, jittered. The `finally` matters: CheckForUpdates reaches the
-      // network, and a single throw used to skip the reschedule entirely, which
-      // silently stopped update checks for the rest of the session.
+      // Cadence comes from the remote config's `updates` group, read per tick.
+      // The `finally` matters: CheckForUpdates reaches the network, and a single
+      // throw used to skip the reschedule entirely, which silently stopped update
+      // checks for the rest of the session.
       const CheckForUpdates_Intervaled = async () => {
         try {
           await CheckForUpdates();
         } catch (error) {
           console.warn("Update check failed", error);
         } finally {
-          setTimeout(CheckForUpdates_Intervaled, jitter(120 * 1000, 0.2));
+          const { checkIntervalMs, checkJitterRatio } = getRemoteConfig().updates;
+          setTimeout(CheckForUpdates_Intervaled, jitter(checkIntervalMs, checkJitterRatio));
         }
       };
-      setTimeout(async () => await CheckForUpdates_Intervaled(), 1000);
+      setTimeout(
+        async () => await CheckForUpdates_Intervaled(),
+        getRemoteConfig().updates.firstCheckDelayMs
+      );
     }
   };
 

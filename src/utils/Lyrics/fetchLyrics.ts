@@ -5,23 +5,31 @@ import { SpotifyPlayer } from "../../components/Global/SpotifyPlayer.ts";
 import PageView, { PageContainer } from "../../components/Pages/PageView.ts";
 import { Query, QueryHttpError, QueryNetworkError } from "../API/Query.ts";
 import { IsTripStatus, ServiceUnavailableError } from "../API/CircuitBreaker.ts";
-import { ProcessLyrics } from "./ProcessLyrics.ts";
+import { JapaneseRomajiIsCurrent, ProcessLyrics } from "./ProcessLyrics.ts";
 import { IsEmptyLyrics } from "./EmptyLines.ts";
 import Logger from "../Logger.ts";
 import { LocalLyricsManager } from "./manager/index.ts";
+import { ParseTTML } from "./manager/parseTTML.ts";
 import { LyricsQueueRetry } from "./LyricsQueueRetry.ts";
+import { SetShownNotice, SyncNoLyricsLayout } from "./LyricsNotice.ts";
 import { GetExpireStore } from "../../modules/Store.ts";
 import { SLObjPack } from "../objpack.ts";
 import { HideLyricsSkeleton, IsLyricsSkeletonEnabled, ShowLyricsSkeleton } from "./LyricsSkeleton.ts";
 import { onExperimentChange } from "../experiments.ts";
+import { getRemoteConfig } from "../remoteConfig.ts";
+import { ClearPinnedCredits } from "./Applyer/Credits/PinnedCredits.ts";
 import { resolveLocalTrackUri } from "../SpotifyLocalTrackResolver.ts";
 
 const lyricsLogger = new Logger("Lyrics Pipeline");
 const lyricsCacheLogger = new Logger("Lyrics Cache");
 
+// A getter, because the expiry is computed on every write: a pushed TTL applies
+// to entries cached from then on, while existing ones keep the one they got.
 export const LyricsStore = GetExpireStore<any>("SpicyLyrics_LyricsStore_g1", 6, {
   Unit: "Days",
-  Duration: 3,
+  get Duration() {
+    return getRemoteConfig().cache.lyricsTtlDays;
+  },
 }, isDev as true);
 
 const lyricsPacker = new SLObjPack();
@@ -45,8 +53,8 @@ function presentLyrics(lyricsData: any): void {
   setRomanizationClass(lyricsData?.HasTransliterations);
   HideLoaderContainer();
   $currentLyricsType.set(lyricsData.Type);
-  PageContainer?.querySelector<HTMLElement>(".ContentBox")?.classList.remove("LyricsHidden");
-  PageContainer?.querySelector(".ContentBox .LyricsContainer")?.classList.remove("Hidden");
+  SetShownNotice(null);
+  SyncNoLyricsLayout();
   PageView.AppendViewControls(true);
   $currentlyFetching.set(false);
 }
@@ -69,6 +77,57 @@ export type FetchLyricsResult = [object | string, number, string?] | null;
  * over the new one.
  */
 let inFlightUri: string | null = null;
+
+/**
+ * Where a fetch ended up when it didn't produce lyrics, and the underlying
+ * error if there was one. The result tuple only carries a keyword, which is
+ * enough to pick the notice but not to debug it, so the notice's copyable
+ * report reads the rest from here.
+ */
+export type LyricsFetchFailure = {
+  uri: string;
+  /** Which stage answered: "saved state", "lyrics cache" or "API". */
+  source: string;
+  detail?: string;
+};
+
+let lastFailure: LyricsFetchFailure | null = null;
+
+function noteFailure(uri: string, source: string, detail?: unknown): void {
+  let text: string | undefined;
+  if (detail instanceof Error) text = `${detail.name}: ${detail.message}`;
+  else if (detail !== undefined) text = String(detail);
+  lastFailure = { uri, source, detail: text };
+}
+
+/** The last failure recorded for `uri`, or `null` if its last fetch didn't fail. */
+export function GetLastLyricsFailure(uri: string | undefined): LyricsFetchFailure | null {
+  return uri && lastFailure?.uri === uri ? lastFailure : null;
+}
+
+/** Which stage last served lyrics, for the bug report: a cached copy is the usual suspect. */
+let lastAnswer: { uri: string; from: "already loaded" | "Local DB" | "cache" | "API" } | null = null;
+
+/** Where `uri`'s lyrics came from, or `null` if it hasn't been served lyrics. */
+export function GetLyricsAnsweredFrom(uri: string | undefined): string | null {
+  return uri && lastAnswer?.uri === uri ? lastAnswer.from : null;
+}
+
+/**
+ * Whether `uri` is showing a "Just once" TTML upload. It exists only in
+ * `$currentLyricsData`, so clearing that to refetch would replace it with the
+ * song's normal lyrics.
+ */
+export function HoldsTemporaryUpload(uri: string | undefined): boolean {
+  const saved = $currentLyricsData.get();
+  if (!uri || !saved.startsWith("{")) return false;
+  try {
+    const data = JSON.parse(saved);
+    return data?.temporaryUpload === true && data.uri === uri;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * The uri of the most recent fetch request. Unlike `inFlightUri` this is never
@@ -98,11 +157,50 @@ function hideLoaderFor(uri: string): void {
   if (!isStaleFetch(uri)) HideLoaderContainer();
 }
 
+/**
+ * Skipping through uncached tracks would otherwise fire an API request for
+ * every one of them. When an uncached fetch follows the previous one within
+ * `rapidSwitchWindowMs`, it waits `rapidSwitchBackoffMs` (loader up) and only
+ * goes to the network if the user is still on the track. Both come from the
+ * remote config's `lyricsFetch` group.
+ */
+
+/** When the last fetch reached the network stage, backed off or not. */
+let lastNetworkStageAt = 0;
+
+/** Ends the pending backoff early and tells its fetch to give up. */
+let cancelPendingBackoff: (() => void) | null = null;
+
+/** Resolves `true` to go ahead with the request, `false` if superseded. */
+function backOffIfSwitchingFast(): Promise<boolean> {
+  const { rapidSwitchWindowMs, rapidSwitchBackoffMs } = getRemoteConfig().lyricsFetch;
+  const now = performance.now();
+  const switchingFast = now - lastNetworkStageAt < rapidSwitchWindowMs;
+  lastNetworkStageAt = now;
+  if (!switchingFast) return Promise.resolve(true);
+
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      cancelPendingBackoff = null;
+      resolve(true);
+    }, rapidSwitchBackoffMs);
+    cancelPendingBackoff = () => {
+      clearTimeout(timer);
+      cancelPendingBackoff = null;
+      resolve(false);
+    };
+  });
+}
+
 export default async function fetchLyrics(uri: string): Promise<FetchLyricsResult> {
   if (inFlightUri === uri) {
     lyricsLogger.debug("Fetch already in flight for this track, skipping", uri);
     return null;
   }
+
+  // A different track was requested, so whatever is waiting out a backoff has
+  // been skipped past — drop it now instead of letting its timer run out.
+  cancelPendingBackoff?.();
 
   inFlightUri = uri;
   latestRequestedUri = uri;
@@ -115,14 +213,17 @@ export default async function fetchLyrics(uri: string): Promise<FetchLyricsResul
     return result ? [result[0], result[1], uri] : null;
   } finally {
     // Only release the lock if we still hold it — a newer fetch may have taken
-    // over while this one was awaiting.
-    if (inFlightUri === uri) inFlightUri = null;
-    $currentlyFetching.set(false);
+    // over while this one was awaiting, and the flag is then that fetch's.
+    if (inFlightUri === uri) {
+      inFlightUri = null;
+      $currentlyFetching.set(false);
+    }
   }
 }
 
 async function runFetchLyrics(uri: string): Promise<[object | string, number] | null> {
   lyricsLogger.debug("Fetch requested", uri);
+  if (lastFailure?.uri === uri) lastFailure = null;
   //if (!PageContainer) return;
   const LyricsContent =
     PageContainer?.querySelector(".LyricsContainer .LyricsContent") ?? undefined;
@@ -136,6 +237,12 @@ async function runFetchLyrics(uri: string): Promise<[object | string, number] | 
   if (SpotifyPlayer.IsDJ()) {
     $currentlyFetching.set(false);
     return ["dj", 400];
+  }
+
+  // Ads (music ads, podcast pre-rolls) can be audio or video, so this goes before the media checks.
+  if (SpotifyPlayer.GetContentType() === "ad") {
+    $currentlyFetching.set(false);
+    return ["ad", 400];
   }
 
   const mediaType = SpotifyPlayer.GetMediaType();
@@ -175,7 +282,8 @@ async function runFetchLyrics(uri: string): Promise<[object | string, number] | 
   // Check if there's already data in localStorage
   const savedLyricsData = $currentLyricsData.get();
 
-  if (savedLyricsData && !isDev) {
+  // Dev builds always refetch, except for an upload that nothing could refetch.
+  if (savedLyricsData && (!isDev || HoldsTemporaryUpload(uri))) {
     try {
       if (savedLyricsData.startsWith("NO_LYRICS:")) {
         // Sentinel format is `NO_LYRICS:<uri>`. The uri itself contains colons,
@@ -183,12 +291,34 @@ async function runFetchLyrics(uri: string): Promise<[object | string, number] | 
         const savedUri = savedLyricsData.slice("NO_LYRICS:".length);
         if (savedUri === targetUri) {
           $currentlyFetching.set(false);
+          noteFailure(uri, "saved state");
           return ["lyrics-not-found", 404];
         }
       } else {
-        const lyricsData = JSON.parse(savedLyricsData);
+        let lyricsData = JSON.parse(savedLyricsData);
         // Return the stored lyrics if the URI matches the current track URI
-        if (lyricsData?.uri === targetUri) {
+        if (lyricsData?.uri === uri) {
+          // A "Just once" upload made with the other Japanese spelling is romanized again
+          // from its own TTML, since its processed syllables keep the old romaji.
+          if (
+            lyricsData.temporaryUpload === true &&
+            typeof lyricsData.uploadedTTML === "string" &&
+            !JapaneseRomajiIsCurrent(lyricsData)
+          ) {
+            const reparsed = ParseTTML(lyricsData.uploadedTTML);
+            if (reparsed) {
+              const refreshed = { ...reparsed, uri, temporaryUpload: true, uploadedTTML: lyricsData.uploadedTTML };
+              await ProcessLyrics(refreshed);
+              if (isStaleFetch(uri)) return [refreshed, 200];
+              // Something saved meanwhile (another upload) is newer, so answer with that. Its own
+              // fetch was turned away while this one held the in-flight lock.
+              if ($currentLyricsData.get() !== savedLyricsData) return runFetchLyrics(uri);
+              lyricsData = refreshed;
+              $currentLyricsData.set(JSON.stringify(lyricsData));
+            }
+          }
+          // Shown again: keep where they first came from, when that's known.
+          if (lastAnswer?.uri !== uri) lastAnswer = { uri, from: "already loaded" };
           presentLyrics(lyricsData);
           return [lyricsData, 200];
         }
@@ -202,7 +332,9 @@ async function runFetchLyrics(uri: string): Promise<[object | string, number] | 
 
   const localLyric = await LocalLyricsManager.get(targetUri);
   if (localLyric) {
-    const lyricsData = { ...localLyric, uri: targetUri };
+    const lyricsData = { ...localLyric, uri };
+    if (isStaleFetch(uri)) return [lyricsData, 200];
+    lastAnswer = { uri, from: "Local DB" };
     $currentLyricsData.set(JSON.stringify(lyricsData));
     presentLyrics(lyricsData);
     return [lyricsData, 200];
@@ -220,22 +352,29 @@ async function runFetchLyrics(uri: string): Promise<[object | string, number] | 
   if (LyricsStore) {
     try {
       const lyricsFromCacheRes = await LyricsStore.GetItem(trackId);
-      if (lyricsFromCacheRes) {
+      // Romaji in the other Japanese spelling is fetched and romanized again.
+      if (lyricsFromCacheRes && JapaneseRomajiIsCurrent(lyricsFromCacheRes)) {
         if (lyricsFromCacheRes?.Value === "NO_LYRICS") {
           $currentlyFetching.set(false);
+          noteFailure(uri, "lyrics cache");
           return ["lyrics-not-found", 404];
         }
         // Tag the cached payload with the current uri so the saved-data and
         // re-fetch checks (which match on uri) recognise it — older cache
         // entries predate the uri field.
-        const lyricsFromCache = { ...(lyricsFromCacheRes ?? {}), uri: targetUri };
+        const lyricsFromCache = { ...(lyricsFromCacheRes ?? {}), uri };
+        if (isStaleFetch(uri)) return [{ ...lyricsFromCache, fromCache: true }, 200];
+        lastAnswer = { uri, from: "cache" };
         $currentLyricsData.set(JSON.stringify(lyricsFromCache));
         presentLyrics(lyricsFromCache);
         return [{ ...lyricsFromCache, fromCache: true }, 200];
       }
     } catch (error) {
       lyricsCacheLogger.error("Error parsing cache entry", error);
+      // Evict it, or every retry reads the same broken entry until its TTL runs out.
+      await LyricsStore.RemoveItem(trackId);
       $currentlyFetching.set(false);
+      noteFailure(uri, "lyrics cache", error);
       return ["unknown-error", 0];
     }
   }
@@ -246,7 +385,18 @@ async function runFetchLyrics(uri: string): Promise<[object | string, number] | 
     return ["offline", 400];
   }
 
+  // Skipped past during the cache lookups or the backoff: the newer fetch owns
+  // the loader, and a null result is dropped by every caller. Checked before
+  // ShowLoaderContainer too, which would otherwise cancel the newer fetch's
+  // pending loader reveal.
+  if (isStaleFetch(uri)) return null;
+
   ShowLoaderContainer(uri);
+
+  if (!(await backOffIfSwitchingFast()) || isStaleFetch(uri)) {
+    lyricsLogger.debug("Skipped past during backoff, not fetching", uri);
+    return null;
+  }
 
   // Fetch new lyrics if no match in localStorage
   /* const lyricsApi = storage.get("customLyricsApi") ?? Defaults.LyricsContent.api.url;
@@ -322,6 +472,7 @@ async function runFetchLyrics(uri: string): Promise<[object | string, number] | 
       lyricsLogger.error("Lyrics query not found");
       hideLoaderFor(uri);
       $currentlyFetching.set(false);
+      noteFailure(uri, "API", "response had no lyrics query");
       return ["lyrics-not-found", 404];
     }
 
@@ -345,6 +496,7 @@ async function runFetchLyrics(uri: string): Promise<[object | string, number] | 
     }
 
     if (status !== 200) {
+      noteFailure(uri, "API", `query status ${status}`);
       if (status === 404) {
         hideLoaderFor(uri);
         $currentlyFetching.set(false);
@@ -367,10 +519,11 @@ async function runFetchLyrics(uri: string): Promise<[object | string, number] | 
     if (lyrics === null || lyrics === undefined || lyrics === "") {
       hideLoaderFor(uri);
       $currentlyFetching.set(false);
+      noteFailure(uri, "API", "empty lyrics payload");
       return ["lyrics-not-found", 404];
     }
 
-    await ProcessLyrics(lyrics);
+    const romanizedInFull = await ProcessLyrics(lyrics);
 
     // Pruning blank lines can empty out a payload the API still counted as a
     // hit. Nothing would render, so treat it as a miss rather than caching and
@@ -379,6 +532,7 @@ async function runFetchLyrics(uri: string): Promise<[object | string, number] | 
       lyricsLogger.warn("Lyrics payload had no renderable lines after pruning");
       hideLoaderFor(uri);
       $currentlyFetching.set(false);
+      noteFailure(uri, "API", "no renderable lines after pruning");
       return ["lyrics-not-found", 404];
     }
 
@@ -388,8 +542,10 @@ async function runFetchLyrics(uri: string): Promise<[object | string, number] | 
     $currentLyricsData.set(JSON.stringify(lyrics));
 
     // The request already completed, so cache it either way — even if the user
-    // has skipped on, the next play of this track gets a cache hit.
-    if (LyricsStore) {
+    // has skipped on, the next play of this track gets a cache hit. Lyrics whose
+    // romanization was cut short (the Japanese dictionary still loading, say)
+    // aren't cached, so the next play romanizes them in full.
+    if (LyricsStore && romanizedInFull) {
       try {
         await LyricsStore.SetItem(trackId, lyrics);
       } catch (error) {
@@ -399,12 +555,14 @@ async function runFetchLyrics(uri: string): Promise<[object | string, number] | 
 
     if (isStaleFetch(uri)) return [{ ...lyrics, fromCache: false }, 200];
 
+    lastAnswer = { uri, from: "API" };
     $currentLyricsData.set(JSON.stringify(lyrics));
     presentLyrics(lyrics);
     return [{ ...lyrics, fromCache: false }, 200];
   } catch (error) {
     $currentlyFetching.set(false);
     hideLoaderFor(uri);
+    noteFailure(uri, "API", error);
 
     // The request was never made: the circuit breaker is holding traffic back
     // because the API is refusing us. That is a temporary pause, not a fault,
@@ -443,7 +601,7 @@ let ContainerShowLoaderTimeout: ReturnType<typeof setTimeout> | null = null;
 
 /** Default copy shown in the loader while a lyrics request is queued (HTTP 503). */
 export const LYRICS_QUEUE_MESSAGE =
-  "Your request is in the queue — hang tight, your lyrics are on the way!";
+  "Your request is in the queue. Hang tight, your lyrics are on the way!";
 
 /**
  * Show the loader container after a delay
@@ -462,12 +620,12 @@ function ShowLoaderContainer(uri: string): void {
     ContainerShowLoaderTimeout = null;
     if (isStaleFetch(uri) || inFlightUri !== uri) return;
     loaderContainer.classList.add("active");
-  }, 2000);
+  }, getRemoteConfig().lyricsFetch.loaderRevealDelayMs);
 }
 
 /**
  * Immediately reveal the loader with a "request queued" message. Used for the
- * HTTP 503 server-queue state, where we want instant feedback (no 2s delay)
+ * HTTP 503 server-queue state, where we want instant feedback (no reveal delay)
  * plus a note explaining the wait. Idempotent and safe to call when the page is
  * closed (no-ops if there's no loader in the current DOM).
  */
@@ -551,4 +709,5 @@ export function ClearLyricsPageContainer(): void {
   if (lyricsContent) {
     lyricsContent.innerHTML = "";
   }
+  ClearPinnedCredits();
 }

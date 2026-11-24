@@ -1,4 +1,6 @@
 import { $spicyLyricsVersion } from "../../utils/stores.ts";
+import { getRemoteConfig } from "../../utils/remoteConfig.ts";
+import { EdgeLookup } from "../../utils/API/EdgeService.ts";
 import Global from "./Global.ts";
 
 interface Location {
@@ -18,11 +20,6 @@ type VersionParsedData =
   | undefined;
 
 let sessionHistory: Location[] = [];
-
-// Plain-text version lookup on the edge, separate from /query, so the frequent
-// update checks don't count against the batched API or its circuit breaker.
-const LATEST_VERSION_URL = "https://api.spicylyrics.org/edge/service?lookup=version";
-const LATEST_VERSION_TIMEOUT_MS = 15_000;
 
 const Session = {
   Navigate: (data: Location) => {
@@ -86,13 +83,20 @@ const Session = {
     GetCurrentVersion: (): VersionParsedData => {
       return Session.SpicyLyrics.ParseVersion($spicyLyricsVersion.get());
     },
-    GetLatestVersion: async (): Promise<VersionParsedData> => {
-      const res = await fetch(LATEST_VERSION_URL, {
-        cache: "no-store",
-        signal: AbortSignal.timeout(LATEST_VERSION_TIMEOUT_MS),
+    GetLatestVersion: async (branch = "public"): Promise<VersionParsedData> => {
+      // On the edge so the frequent update checks stay off /query. Answers
+      // { product, branches: [{ tag, version }] }; we read one branch's version.
+      const res = await EdgeLookup("version", {
+        timeoutMs: getRemoteConfig().updates.latestVersionTimeoutMs,
       });
       if (!res.ok) return undefined;
-      return Session.SpicyLyrics.ParseVersion(await res.text());
+      const body = (await res.json().catch(() => undefined)) as
+        | { branches?: { tag?: unknown; version?: unknown }[] }
+        | undefined;
+      const version = Array.isArray(body?.branches)
+        ? body.branches.find((b) => b?.tag === branch)?.version
+        : undefined;
+      return typeof version === "string" ? Session.SpicyLyrics.ParseVersion(version) : undefined;
     },
     IsOutdated: async (): Promise<boolean> => {
       const latestVersion = await Session.SpicyLyrics.GetLatestVersion();
@@ -103,11 +107,11 @@ const Session = {
     IsBehind: (currentVersion: VersionParsedData, latestVersion: VersionParsedData): boolean => {
       if (latestVersion === undefined || currentVersion === undefined) return false;
 
-      return (
-        latestVersion.Major > currentVersion.Major ||
-        latestVersion.Minor > currentVersion.Minor ||
-        latestVersion.Patch > currentVersion.Patch
-      );
+      // In order: Minor only decides once Major ties, and Patch once both do. Compared
+      // one by one, 6.4.70 counted as behind 6.3.190.
+      if (latestVersion.Major !== currentVersion.Major) return latestVersion.Major > currentVersion.Major;
+      if (latestVersion.Minor !== currentVersion.Minor) return latestVersion.Minor > currentVersion.Minor;
+      return latestVersion.Patch > currentVersion.Patch;
     },
   },
 };
