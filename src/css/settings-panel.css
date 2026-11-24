@@ -254,6 +254,8 @@ sl-generic-modal.SpicyLyricsModal .sl-modal-overlay {
     flex-direction: column;
     min-width: 0;
     min-height: 0;
+  }
+
   @keyframes sl-sp-menu-in {
     from {
       opacity: 0;
@@ -630,6 +632,7 @@ sl-generic-modal.SpicyLyricsModal .sl-modal-overlay {
     padding: 2px 7px 2px 6px;
     border-radius: 999px;
     vertical-align: 1px;
+  }
 
   .sl-sp-select {
     background: var(--accent-tint-bg);

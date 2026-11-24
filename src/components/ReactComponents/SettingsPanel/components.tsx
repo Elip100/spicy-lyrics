@@ -9,7 +9,7 @@ import { searchTerms } from "./model.ts";
 export const PeekContext = React.createContext<{
   start: (keep: HTMLElement | null) => void;
   end: () => void;
-}>({ start: () => {}, end: () => {} });
+}>({ start: () => { }, end: () => { } });
 
 export function Row({
   label,
@@ -480,9 +480,9 @@ export function Slider({
   // a bare stub of track to the left of the fill.
   const fillStyle = isBipolar
     ? {
-        left: posFor(fillFrom),
-        width: `calc(${(fillSpan * 100).toFixed(4)}% - ${(fillSpan * THUMB).toFixed(3)}px)`,
-      }
+      left: posFor(fillFrom),
+      width: `calc(${(fillSpan * 100).toFixed(4)}% - ${(fillSpan * THUMB).toFixed(3)}px)`,
+    }
     : { left: "0px", width: posFor(frac) };
 
   const peek = useContext(PeekContext);
@@ -813,7 +813,7 @@ export const SearchBar = forwardRef<
       )}
     </div>
   );
-}
+});
 
 export function Tooltip({ text, children }: { text: string; children: React.ReactNode }) {
   return (
